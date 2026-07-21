@@ -31,7 +31,13 @@ function groupByDay(games: GameWithVenue[]) {
 
 export default async function GamesPage() {
   const supabase = await createClient();
+const {
+  data: { user },
+  error: userError,
+} = await supabase.auth.getUser();
 
+console.log("[games] User:", user);
+console.log("[games] User error:", userError);
   const { data: games, error } = await supabase
     .from("games")
     .select("*, venue:venues(*)")
