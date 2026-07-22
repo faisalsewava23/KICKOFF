@@ -3,9 +3,11 @@ import { sendReminderEmail } from "@/lib/emails/reminder";
 import { appUrl, kickoffLabel } from "@/lib/emails/notify";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-// 24-hour reminders. Designed for Vercel Cron (hourly): finds open games
-// kicking off 24–25h from now and emails their confirmed players.
-// Idempotent via bookings.reminder_sent_at — re-runs never double-send.
+// Kickoff reminders. Runs daily at 08:00 UTC via Vercel Cron (hourly crons
+// need a paid plan): finds open games kicking off within the next 24 hours
+// and emails their confirmed players — so everyone gets a morning-of or
+// evening-before nudge. Idempotent via bookings.reminder_sent_at — re-runs
+// and overlapping windows never double-send.
 export async function GET(request: Request) {
   const secret = process.env.CRON_SECRET;
   const auth = request.headers.get("authorization");
@@ -14,8 +16,8 @@ export async function GET(request: Request) {
   }
 
   const db = createAdminClient();
-  const from = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-  const to = new Date(Date.now() + 25 * 60 * 60 * 1000).toISOString();
+  const from = new Date().toISOString();
+  const to = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
   const { data: games, error } = await db
     .from("games")
