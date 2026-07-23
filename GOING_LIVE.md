@@ -86,7 +86,8 @@ Check he shows **charges_enabled** afterwards: his `/organiser` page shows no
       API key) so magic links also come from your domain and escape
       Supabase's built-in rate limits (a handful/hour — not enough for 300
       players). Set sender name "KickOff".
-- [ ] Keep the magic-link template's `{{ .RedirectTo }}?token_hash=…` form.
+- [ ] Login emails are 6-digit codes: the Magic Link template must show
+      `{{ .Token }}` prominently (no confirmation URL needed).
 
 ## 7. Week-one monitoring
 
