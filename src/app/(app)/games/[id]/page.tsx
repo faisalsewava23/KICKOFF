@@ -13,6 +13,7 @@ import { RosterStack } from "@/components/roster-stack";
 import { calculatePlayerTotal } from "@/lib/fees";
 import { createClient } from "@/lib/supabase/server";
 import { formatPence, initials } from "@/lib/utils";
+import { planWalletApplication } from "@/lib/wallet";
 
 export async function generateMetadata({
   params,
@@ -71,18 +72,28 @@ export default async function GameDetailPage({
   let waitlistCount = 0;
   let myBookingStatus: string | undefined;
   let myWaitlistPosition: number | null = null;
+  let myWalletApplied = 0;
+  let walletBalance = 0;
 
   if (user) {
-    const [{ data: roster, error: rosterError }, { data: myBooking }] =
-      await Promise.all([
-        supabase.rpc("game_roster", { p_game_id: id }),
-        supabase
-          .from("bookings")
-          .select("status, waitlist_position")
-          .eq("game_id", id)
-          .eq("user_id", user.id)
-          .maybeSingle(),
-      ]);
+    const [
+      { data: roster, error: rosterError },
+      { data: myBooking },
+      { data: myProfile },
+    ] = await Promise.all([
+      supabase.rpc("game_roster", { p_game_id: id }),
+      supabase
+        .from("bookings")
+        .select("status, waitlist_position, wallet_applied_pence")
+        .eq("game_id", id)
+        .eq("user_id", user.id)
+        .maybeSingle(),
+      supabase
+        .from("profiles")
+        .select("wallet_balance_pence")
+        .eq("id", user.id)
+        .maybeSingle(),
+    ]);
     if (rosterError) {
       console.error("[game detail] game_roster failed:", rosterError.message);
     }
@@ -92,6 +103,8 @@ export default async function GameDetailPage({
     waitlistCount = (roster ?? []).filter((r) => r.role === "waitlist").length;
     myBookingStatus = myBooking?.status;
     myWaitlistPosition = myBooking?.waitlist_position ?? null;
+    myWalletApplied = myBooking?.wallet_applied_pence ?? 0;
+    walletBalance = myProfile?.wallet_balance_pence ?? 0;
   } else {
     const { data: countRows, error: countsError } = await supabase.rpc(
       "game_booking_counts",
@@ -110,6 +123,14 @@ export default async function GameDetailPage({
   const kickoff = new Date(game.kickoff_at);
   const spotsLeft = Math.max(game.max_players - confirmedCount, 0);
   const price = calculatePlayerTotal(game.price_pence);
+
+  // What the wallet would cover if this user booked right now. Only in
+  // play while they're still deciding — once booked, the booking row's
+  // wallet_applied_pence is the truth.
+  const hasLiveBooking =
+    myBookingStatus === "confirmed" || myBookingStatus === "waitlist";
+  const plan = planWalletApplication(price, walletBalance);
+  const planWalletPence = user && !hasLiveBooking ? plan.walletPence : 0;
 
   const joinState: JoinState =
     myBookingStatus === "confirmed"
@@ -146,6 +167,14 @@ export default async function GameDetailPage({
             variant={myBookingStatus === "confirmed" ? "confirmed" : "waitlist"}
             waitlistPosition={myWaitlistPosition}
             totalLabel={formatPence(price.totalPence)}
+            walletHeldLabel={
+              myWalletApplied > 0 ? formatPence(myWalletApplied) : null
+            }
+            cardChargeLabel={
+              myWalletApplied > 0 && myWalletApplied < price.totalPence
+                ? formatPence(price.totalPence - myWalletApplied)
+                : null
+            }
           />
         ) : (
           <ConfirmingSpot />
@@ -192,7 +221,7 @@ export default async function GameDetailPage({
 
       <section className="flex flex-col gap-3">
         <SectionLabel>PRICE</SectionLabel>
-        <PriceBreakdown price={price} />
+        <PriceBreakdown price={price} walletPence={planWalletPence} />
       </section>
 
       <Separator />
@@ -238,27 +267,81 @@ export default async function GameDetailPage({
 
       {user && joinState === "waitlist" ? (
         <p className="rounded-lg border p-4 text-sm text-muted-foreground">
-          This game is full. If a spot opens, you&apos;ll be automatically
-          charged{" "}
-          <span className="font-semibold text-foreground tabular-nums">
-            {formatPence(price.totalPence)}
-          </span>{" "}
-          and confirmed. Cancel your waitlist spot anytime before then —
-          it&apos;s free.
+          {planWalletPence === 0 ? (
+            <>
+              This game is full. If a spot opens, you&apos;ll be automatically
+              charged{" "}
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(price.totalPence)}
+              </span>{" "}
+              and confirmed. Cancel your waitlist spot anytime before then —
+              it&apos;s free.
+            </>
+          ) : planWalletPence === price.totalPence ? (
+            <>
+              This game is full. Joining the waitlist holds{" "}
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(planWalletPence)}
+              </span>{" "}
+              from your KickOff wallet — if a spot opens you&apos;re
+              automatically confirmed. Leave anytime before then and the
+              credit goes straight back.
+            </>
+          ) : (
+            <>
+              This game is full. Joining the waitlist holds{" "}
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(planWalletPence)}
+              </span>{" "}
+              from your wallet;{" "}
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(price.totalPence - planWalletPence)}
+              </span>{" "}
+              goes on your card only if a spot opens and you&apos;re
+              confirmed. Leaving before then is free — the credit comes
+              straight back and your card is never charged.
+            </>
+          )}
         </p>
       ) : null}
       {user && joinState === "on_waitlist" ? (
         <p className="rounded-lg border p-4 text-sm text-muted-foreground">
-          If a spot opens, you&apos;ll be automatically charged{" "}
-          <span className="font-semibold text-foreground tabular-nums">
-            {formatPence(price.totalPence)}
-          </span>{" "}
-          and confirmed. Cancelling your waitlist spot is free until then.
+          {myWalletApplied === 0 ? (
+            <>
+              If a spot opens, you&apos;ll be automatically charged{" "}
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(price.totalPence)}
+              </span>{" "}
+              and confirmed. Cancelling your waitlist spot is free until then.
+            </>
+          ) : myWalletApplied === price.totalPence ? (
+            <>
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(myWalletApplied)}
+              </span>{" "}
+              is held from your KickOff wallet. If a spot opens you&apos;re
+              automatically confirmed. Leave the waitlist anytime before then
+              — the credit goes straight back.
+            </>
+          ) : (
+            <>
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(myWalletApplied)}
+              </span>{" "}
+              is held from your wallet. If a spot opens,{" "}
+              <span className="font-semibold text-foreground tabular-nums">
+                {formatPence(price.totalPence - myWalletApplied)}
+              </span>{" "}
+              goes on your card and you&apos;re confirmed. Leave before then
+              and the credit comes straight back — your card is never charged.
+            </>
+          )}
         </p>
       ) : null}
 
       <JoinBar
         totalPence={price.totalPence}
+        walletPence={planWalletPence}
         state={joinState}
         gameId={id}
         loginHref={loginHref}

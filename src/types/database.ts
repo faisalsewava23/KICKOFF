@@ -19,31 +19,37 @@ export type Database = {
           created_at: string;
           game_id: string;
           id: string;
+          payment_generation: number;
           reminder_sent_at: string | null;
           status: string;
           stripe_payment_intent: string | null;
           user_id: string;
           waitlist_position: number | null;
+          wallet_applied_pence: number;
         };
         Insert: {
           created_at?: string;
           game_id: string;
           id?: string;
+          payment_generation?: number;
           reminder_sent_at?: string | null;
           status?: string;
           stripe_payment_intent?: string | null;
           user_id: string;
           waitlist_position?: number | null;
+          wallet_applied_pence?: number;
         };
         Update: {
           created_at?: string;
           game_id?: string;
           id?: string;
+          payment_generation?: number;
           reminder_sent_at?: string | null;
           status?: string;
           stripe_payment_intent?: string | null;
           user_id?: string;
           waitlist_position?: number | null;
+          wallet_applied_pence?: number;
         };
         Relationships: [
           {
@@ -122,35 +128,48 @@ export type Database = {
       organiser_payouts: {
         Row: {
           amount_pence: number;
+          booking_id: string | null;
           created_at: string;
           game_id: string;
           id: string;
           organiser_id: string;
           paid_at: string | null;
+          payout_key: string | null;
           status: string;
           stripe_transfer_id: string | null;
         };
         Insert: {
           amount_pence: number;
+          booking_id?: string | null;
           created_at?: string;
           game_id: string;
           id?: string;
           organiser_id: string;
           paid_at?: string | null;
+          payout_key?: string | null;
           status?: string;
           stripe_transfer_id?: string | null;
         };
         Update: {
           amount_pence?: number;
+          booking_id?: string | null;
           created_at?: string;
           game_id?: string;
           id?: string;
           organiser_id?: string;
           paid_at?: string | null;
+          payout_key?: string | null;
           status?: string;
           stripe_transfer_id?: string | null;
         };
         Relationships: [
+          {
+            foreignKeyName: "organiser_payouts_booking_id_fkey";
+            columns: ["booking_id"];
+            isOneToOne: false;
+            referencedRelation: "bookings";
+            referencedColumns: ["id"];
+          },
           {
             foreignKeyName: "organiser_payouts_game_id_fkey";
             columns: ["game_id"];
@@ -206,6 +225,51 @@ export type Database = {
         };
         Relationships: [];
       };
+      wallet_holds: {
+        Row: {
+          amount_pence: number;
+          checkout_session_id: string | null;
+          created_at: string;
+          game_id: string;
+          id: string;
+          status: string;
+          user_id: string;
+        };
+        Insert: {
+          amount_pence: number;
+          checkout_session_id?: string | null;
+          created_at?: string;
+          game_id: string;
+          id?: string;
+          status?: string;
+          user_id: string;
+        };
+        Update: {
+          amount_pence?: number;
+          checkout_session_id?: string | null;
+          created_at?: string;
+          game_id?: string;
+          id?: string;
+          status?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "wallet_holds_game_id_fkey";
+            columns: ["game_id"];
+            isOneToOne: false;
+            referencedRelation: "games";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "wallet_holds_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       venues: {
         Row: {
           address: string;
@@ -244,6 +308,26 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      book_with_wallet: {
+        Args: { p_game_id: string; p_user_id: string; p_amount: number };
+        Returns: {
+          booking_id: string;
+          status: string;
+          waitlist_position: number | null;
+        }[];
+      };
+      hold_wallet_for_checkout: {
+        Args: { p_user_id: string; p_game_id: string; p_amount: number };
+        Returns: string;
+      };
+      release_wallet_hold: {
+        Args: { p_hold_id: string };
+        Returns: boolean;
+      };
+      consume_wallet_hold: {
+        Args: { p_hold_id: string };
+        Returns: number | null;
+      };
       claim_next_waitlist_promotion: {
         Args: { p_game_id: string };
         Returns: {
@@ -251,6 +335,7 @@ export type Database = {
           user_id: string;
           stripe_payment_intent: string | null;
           claimed_position: number | null;
+          wallet_applied_pence: number;
           resumed: boolean;
         }[];
       };

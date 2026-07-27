@@ -46,7 +46,9 @@ export async function cancelBooking(
     return { success: false, error: "This game is no longer available." };
   }
   const kickoff = new Date(booking.game.kickoff_at).getTime();
-  if (kickoff <= Date.now()) {
+  // Waitlist spots stay cancellable even after kickoff: a wallet debit or
+  // card authorisation put down at join must always have a way back out.
+  if (kickoff <= Date.now() && booking.status !== "waitlist") {
     return { success: false, error: "This game has already kicked off." };
   }
 
@@ -57,9 +59,12 @@ export async function cancelBooking(
   // through the service role after the ownership check above.
   const admin = createAdminClient();
 
+  let refundedPence: number | undefined;
+
   if (booking.status === "waitlist") {
     // Self-cancel from the waitlist: free anytime, and everyone behind
     // shifts up one (atomic in SQL, shared with the promotion machinery).
+    // The resolve RPC also hands back any wallet credit put down at join.
     const { error: resolveError } = await admin.rpc(
       "resolve_waitlist_booking",
       { p_booking_id: booking.id, p_outcome: "cancelled" }
@@ -68,7 +73,10 @@ export async function cancelBooking(
       console.error("[cancelBooking] waitlist resolve failed:", resolveError.message);
       return { success: false, error: "Couldn't cancel. Please try again." };
     }
-    // Release the uncaptured authorisation — they were never charged.
+    if (booking.wallet_applied_pence > 0) {
+      refundedPence = booking.wallet_applied_pence;
+    }
+    // Release the uncaptured authorisation — the card was never charged.
     if (booking.stripe_payment_intent) {
       try {
         await getStripe().paymentIntents.cancel(booking.stripe_payment_intent);
@@ -87,7 +95,6 @@ export async function cancelBooking(
     }
   }
 
-  let refundedPence: number | undefined;
   if (refundable) {
     refundedPence = calculatePlayerTotal(booking.game.price_pence).totalPence;
     const { data: profile } = await admin

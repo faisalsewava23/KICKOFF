@@ -21,12 +21,15 @@ export function CancelBookingButton({
   refundable,
   refundPence,
   isWaitlist,
+  walletHeldPence = 0,
 }: {
   bookingId: string;
   // Computed server-side: confirmed booking, more than 6h to kickoff.
   refundable: boolean;
   refundPence: number;
   isWaitlist: boolean;
+  // Wallet credit held against a waitlist spot — refunded on leaving.
+  walletHeldPence?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
@@ -37,7 +40,9 @@ export function CancelBookingButton({
       if (result.success) {
         toast(
           result.refundedPence
-            ? `Cancelled — ${formatPence(result.refundedPence)} is back in your wallet.`
+            ? isWaitlist
+              ? `You've left the waitlist — ${formatPence(result.refundedPence)} is back in your wallet.`
+              : `Cancelled — ${formatPence(result.refundedPence)} is back in your wallet.`
             : isWaitlist
               ? "You've left the waitlist."
               : "Booking cancelled."
@@ -65,7 +70,9 @@ export function CancelBookingButton({
           </DialogTitle>
           <DialogDescription>
             {isWaitlist
-              ? "You haven't been charged and won't be — leaving the waitlist is free. Everyone behind you moves up a place."
+              ? walletHeldPence > 0
+                ? `${formatPence(walletHeldPence)} goes straight back to your wallet the moment you leave — your card is never charged. Everyone behind you moves up a place.`
+                : "You haven't been charged and won't be — leaving the waitlist is free. Everyone behind you moves up a place."
               : refundable
                 ? `${formatPence(refundPence)} goes straight back to your KickOff wallet.`
                 : "Kickoff is less than 6 hours away, so cancelling now forfeits what you paid. This can't be undone."}

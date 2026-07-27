@@ -9,11 +9,24 @@ export function BookedBanner({
   variant,
   waitlistPosition,
   totalLabel,
+  walletHeldLabel,
+  cardChargeLabel,
 }: {
   variant: "confirmed" | "waitlist";
   waitlistPosition: number | null;
   totalLabel: string;
+  // Set when wallet credit is held against this waitlist spot — the
+  // "you haven't been charged" line would be a lie without it.
+  walletHeldLabel?: string | null;
+  // The card remainder charged only at promotion (part-wallet waitlist).
+  cardChargeLabel?: string | null;
 }) {
+  const waitlistNote = walletHeldLabel
+    ? cardChargeLabel
+      ? `${walletHeldLabel} is held from your wallet. If a spot opens, ${cardChargeLabel} goes on your card and you're confirmed. Leave the waitlist anytime before then — the credit goes straight back and your card is never charged.`
+      : `${walletHeldLabel} is held from your KickOff wallet. If a spot opens you're automatically confirmed. Leave the waitlist anytime before then — the credit goes straight back.`
+    : `You haven't been charged. If a spot opens, you'll be automatically charged ${totalLabel} and confirmed. Cancel your waitlist spot anytime before then — it's free.`;
+
   return (
     <div className="rounded-xl border border-primary/50 bg-primary/10 p-6 animate-in fade-in zoom-in-95 duration-300">
       <CircleCheck className="size-8 text-primary" aria-hidden />
@@ -25,7 +38,7 @@ export function BookedBanner({
       <p className="mt-1 text-sm text-muted-foreground">
         {variant === "confirmed"
           ? "Your spot's locked in. Find it any time under Bookings."
-          : `You haven't been charged. If a spot opens, you'll be automatically charged ${totalLabel} and confirmed. Cancel your waitlist spot anytime before then — it's free.`}
+          : waitlistNote}
       </p>
     </div>
   );

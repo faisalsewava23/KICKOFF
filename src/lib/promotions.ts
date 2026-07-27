@@ -13,6 +13,7 @@
 // - The outcome write (resolve) is idempotent in SQL; webhook replays no-op.
 import type Stripe from "stripe";
 import { notifyPromotion } from "@/lib/emails/notify";
+import { settleWalletPayout } from "@/lib/payouts";
 import { getStripe } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -21,6 +22,7 @@ type Claim = {
   user_id: string;
   stripe_payment_intent: string | null;
   claimed_position: number | null;
+  wallet_applied_pence: number;
   resumed: boolean;
 };
 
@@ -65,11 +67,16 @@ export async function promoteAfterCancellation(gameId: string): Promise<void> {
         (claim.resumed ? " (resumed)" : "")
     );
     if (outcome.ok) {
+      // Wallet-covered share of the organiser's money moves at confirmation.
+      if (claim.wallet_applied_pence > 0) {
+        await settleWalletPayout(claim.booking_id);
+      }
       // The receipt email — sent after the money moved, never before.
       await notifyPromotion(
         gameId,
         claim.user_id,
-        outcome.newPaymentIntentId ?? claim.stripe_payment_intent
+        outcome.newPaymentIntentId ?? claim.stripe_payment_intent,
+        claim.wallet_applied_pence
       );
       // Spot filled. Loop again: another spot may also be free.
       continue;
@@ -82,6 +89,11 @@ export async function promoteAfterCancellation(gameId: string): Promise<void> {
 // the same saved card if the authorisation has expired.
 async function attemptPromotionCharge(claim: Claim): Promise<ChargeOutcome> {
   if (!claim.stripe_payment_intent) {
+    if (claim.wallet_applied_pence > 0) {
+      // Fully wallet-paid waitlist booking: the money was debited at join
+      // time — there is nothing left to charge. Promotion is free to land.
+      return { ok: true, newPaymentIntentId: null };
+    }
     // No payment intent on file (e.g. admin-created row): can't charge.
     return { ok: false, newPaymentIntentId: null };
   }

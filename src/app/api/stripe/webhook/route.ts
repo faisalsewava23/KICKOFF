@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { notifyBookingOutcome } from "@/lib/emails/notify";
+import { settleWalletPayout } from "@/lib/payouts";
 import { promoteAfterCancellation } from "@/lib/promotions";
 import { getStripe } from "@/lib/stripe";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -24,6 +25,8 @@ export async function POST(request: Request) {
   try {
     if (event.type === "checkout.session.completed") {
       await handleCheckoutCompleted(event.data.object);
+    } else if (event.type === "checkout.session.expired") {
+      await handleCheckoutExpired(event.data.object);
     } else if (
       event.type === "payment_intent.succeeded" ||
       event.type === "payment_intent.payment_failed"
@@ -43,6 +46,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   const gameId = session.metadata?.game_id;
   const userId = session.metadata?.user_id;
   const intendedStatus = session.metadata?.intended_status;
+  const walletHoldId = session.metadata?.wallet_hold_id;
   if (!gameId || !userId) {
     console.error("[stripe webhook] session missing metadata:", session.id);
     return;
@@ -57,7 +61,7 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
   // Idempotency: webhook retries and double-sends must not duplicate.
   const { data: existing } = await db
     .from("bookings")
-    .select("id, status, stripe_payment_intent")
+    .select("id, status, stripe_payment_intent, payment_generation")
     .eq("game_id", gameId)
     .eq("user_id", userId)
     .maybeSingle();
@@ -70,7 +74,32 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
       return;
     }
     if (existing.status !== "cancelled") {
-      return; // live booking from another flow — don't clobber
+      // Live booking from another flow — don't clobber. Any wallet hold on
+      // this abandoned session is released by the janitor.
+      return;
+    }
+  }
+
+  // The payment charged total-minus-wallet, so the hold is now real spend.
+  // Consume is idempotent (replays return the same amount).
+  let walletApplied = 0;
+  if (walletHoldId) {
+    const { data: consumed, error: consumeError } = await db.rpc(
+      "consume_wallet_hold",
+      { p_hold_id: walletHoldId }
+    );
+    if (consumeError) {
+      throw new Error(`wallet hold consume failed: ${consumeError.message}`);
+    }
+    if (consumed === null) {
+      // Hold was already released AND the credit has since been spent — the
+      // player paid the discounted price and keeps the released credit.
+      // Platform absorbs it; flag for a human.
+      console.error(
+        `[stripe webhook] MONEY: hold ${walletHoldId} unrecoverable for session ${session.id} — booking recorded with wallet_applied=0`
+      );
+    } else {
+      walletApplied = consumed;
     }
   }
 
@@ -92,21 +121,53 @@ async function handleCheckoutCompleted(session: Stripe.Checkout.Session) {
     }
   }
 
-  const { error } = await db.from("bookings").upsert(
-    {
-      game_id: gameId,
-      user_id: userId,
-      status,
-      waitlist_position: waitlistPosition,
-      stripe_payment_intent: paymentIntentId,
-    },
-    { onConflict: "game_id,user_id" } // a cancelled row becomes the new booking
-  );
+  const { data: upserted, error } = await db
+    .from("bookings")
+    .upsert(
+      {
+        game_id: gameId,
+        user_id: userId,
+        status,
+        waitlist_position: waitlistPosition,
+        stripe_payment_intent: paymentIntentId,
+        wallet_applied_pence: walletApplied,
+        // Rebooking a cancelled row is a NEW payment for an old row — bump
+        // the generation so its payout settles separately from past lives.
+        payment_generation: existing ? existing.payment_generation + 1 : 0,
+      },
+      { onConflict: "game_id,user_id" } // a cancelled row becomes the new booking
+    )
+    .select("id")
+    .single();
   if (error) {
     throw new Error(`bookings upsert failed: ${error.message}`);
   }
 
+  // Wallet-covered share of the organiser's money moves at confirmation.
+  if (status === "confirmed" && walletApplied > 0 && upserted) {
+    await settleWalletPayout(upserted.id);
+  }
+
   await notifyBookingOutcome(gameId, userId, status, waitlistPosition);
+}
+
+// Abandoned part-wallet checkout: Stripe expired the session (we set the
+// 30-minute minimum), so the wallet debit goes straight back. Idempotent.
+async function handleCheckoutExpired(session: Stripe.Checkout.Session) {
+  const walletHoldId = session.metadata?.wallet_hold_id;
+  if (!walletHoldId) return;
+  const db = createAdminClient();
+  const { data: released, error } = await db.rpc("release_wallet_hold", {
+    p_hold_id: walletHoldId,
+  });
+  if (error) {
+    throw new Error(`wallet hold release failed: ${error.message}`);
+  }
+  if (released) {
+    console.log(
+      `[stripe webhook] released wallet hold ${walletHoldId} (checkout expired)`
+    );
+  }
 }
 
 // Reconciliation for promotion charges: if the app crashed between charging
@@ -130,8 +191,14 @@ async function handlePromotionPaymentEvent(
   if (error) {
     throw new Error(`promotion resolve failed: ${error.message}`);
   }
+  if (applied && outcome === "confirmed") {
+    // A part-wallet waitlist booking just confirmed — settle the wallet
+    // share with the organiser (no-op when nothing is owed).
+    await settleWalletPayout(pi.metadata.booking_id);
+  }
   if (applied && outcome === "cancelled" && pi.metadata.game_id) {
-    // The claimed spot is free again — continue down the queue.
+    // The claimed spot is free again — continue down the queue. (The
+    // resolve RPC already refunded any wallet debit on this booking.)
     await promoteAfterCancellation(pi.metadata.game_id);
   }
 }
@@ -145,7 +212,9 @@ async function decideStatus(
       .from("bookings")
       .select("id", { count: "exact", head: true })
       .eq("game_id", gameId)
-      .eq("status", "confirmed"),
+      // 'promoting' is a spot mid-handover — it counts against capacity
+      // here exactly as it does in the SQL claim/booking functions.
+      .in("status", ["confirmed", "promoting"]),
     db.from("games").select("max_players").eq("id", gameId).single(),
   ]);
 

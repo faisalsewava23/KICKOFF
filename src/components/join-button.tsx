@@ -61,6 +61,10 @@ export function JoinButton({
           const result = await initiateBooking(gameId);
           if (result.url) {
             window.location.assign(result.url);
+          } else if (result.booked) {
+            // Wallet covered the lot — no Stripe. Full navigation so the
+            // server re-renders the page with the booking + success banner.
+            window.location.assign(`/games/${gameId}?booked=1`);
           } else {
             toast.error(
               result.error ?? "Couldn't start checkout. Please try again."
@@ -82,17 +86,30 @@ export function JoinButton({
 }
 
 // Airbnb-style sticky booking bar: total on the left, CTA on the right.
+// When wallet credit will be applied, the sub-line shows the maths.
 export function JoinBar({
   totalPence,
+  walletPence = 0,
   state,
   gameId,
   loginHref,
 }: {
   totalPence: number;
+  // How much of the total the user's wallet will cover if they book now.
+  walletPence?: number;
   state: JoinState;
   gameId: string;
   loginHref?: string;
 }) {
+  const cardPence = totalPence - walletPence;
+  const joining = state === "join" || state === "waitlist";
+  const subLine =
+    joining && walletPence > 0
+      ? cardPence === 0
+        ? "covered by your wallet"
+        : `− ${formatPence(walletPence)} wallet = ${formatPence(cardPence)} to pay`
+      : "all in";
+
   return (
     <div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 backdrop-blur">
       <div className="mx-auto flex w-full max-w-xl items-center justify-between gap-4 px-5 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
@@ -100,7 +117,9 @@ export function JoinBar({
           <p className="font-heading text-2xl font-bold tabular-nums leading-none">
             {formatPence(totalPence)}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">all in</p>
+          <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+            {subLine}
+          </p>
         </div>
         <JoinButton state={state} gameId={gameId} loginHref={loginHref} />
       </div>

@@ -30,6 +30,14 @@ function StatusBadge({ booking }: { booking: BookingWithGame }) {
   );
 }
 
+// "£8.32 paid", with the wallet/card split spelled out when credit was used.
+function paidLabel(totalPence: number, walletPence: number): string {
+  const total = formatPence(totalPence);
+  if (walletPence <= 0) return `${total} paid`;
+  if (walletPence >= totalPence) return `${total} paid from wallet`;
+  return `${total} paid (${formatPence(walletPence)} wallet + ${formatPence(totalPence - walletPence)} card)`;
+}
+
 export function BookingCard({
   booking,
   isPast,
@@ -38,13 +46,19 @@ export function BookingCard({
   isPast: boolean;
 }) {
   const kickoff = new Date(booking.game.kickoff_at);
-  const cancellable = !isPast && booking.status !== "cancelled";
+  // Waitlist spots stay cancellable even after kickoff — wallet credit or a
+  // card authorisation put down at join always needs a way back out.
+  const cancellable =
+    booking.status === "waitlist" ||
+    (booking.status === "confirmed" && !isPast);
   // Server component rendered per request — reading the clock is intentional;
   // the server action re-checks the 6-hour rule at cancel time regardless.
   // eslint-disable-next-line react-hooks/purity
   const msToKickoff = kickoff.getTime() - Date.now();
   const refundable =
     booking.status === "confirmed" && msToKickoff > SIX_HOURS_MS;
+  const price = calculatePlayerTotal(booking.game.price_pence);
+  const walletHeld = booking.wallet_applied_pence;
 
   return (
     <div className="rounded-xl border bg-card p-5 transition-colors hover:border-primary/50">
@@ -61,19 +75,38 @@ export function BookingCard({
           </p>
           <p className="mt-1 text-sm text-muted-foreground tabular-nums">
             {booking.game.format} ·{" "}
-            {formatPence(calculatePlayerTotal(booking.game.price_pence).totalPence)}{" "}
-            paid
+            {booking.status === "waitlist"
+              ? formatPence(price.totalPence)
+              : paidLabel(price.totalPence, walletHeld)}
           </p>
         </Link>
         <StatusBadge booking={booking} />
       </div>
       {booking.status === "waitlist" ? (
         <p className="mt-2 text-xs text-muted-foreground">
-          Auto-charged{" "}
-          <span className="tabular-nums">
-            {formatPence(calculatePlayerTotal(booking.game.price_pence).totalPence)}
-          </span>{" "}
-          if a spot opens — cancelling is free until then.
+          {walletHeld <= 0 ? (
+            <>
+              Auto-charged{" "}
+              <span className="tabular-nums">{formatPence(price.totalPence)}</span>{" "}
+              if a spot opens — cancelling is free until then.
+            </>
+          ) : walletHeld >= price.totalPence ? (
+            <>
+              <span className="tabular-nums">{formatPence(walletHeld)}</span>{" "}
+              held from your wallet — goes straight back if you leave.
+              You&apos;re auto-confirmed if a spot opens.
+            </>
+          ) : (
+            <>
+              <span className="tabular-nums">{formatPence(walletHeld)}</span>{" "}
+              wallet held +{" "}
+              <span className="tabular-nums">
+                {formatPence(price.totalPence - walletHeld)}
+              </span>{" "}
+              on your card if a spot opens — leaving before then refunds the
+              credit.
+            </>
+          )}
         </p>
       ) : null}
       {cancellable ? (
@@ -81,8 +114,9 @@ export function BookingCard({
           <CancelBookingButton
             bookingId={booking.id}
             refundable={refundable}
-            refundPence={calculatePlayerTotal(booking.game.price_pence).totalPence}
+            refundPence={price.totalPence}
             isWaitlist={booking.status === "waitlist"}
+            walletHeldPence={booking.status === "waitlist" ? walletHeld : 0}
           />
         </div>
       ) : null}

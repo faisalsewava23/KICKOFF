@@ -66,12 +66,16 @@ export async function notifyBookingOutcome(
 export async function notifyPromotion(
   gameId: string,
   userId: string,
-  paymentIntentId: string | null
+  paymentIntentId: string | null,
+  walletAppliedPence = 0
 ): Promise<void> {
   try {
     const ctx = await gatherBookingContext(gameId, userId);
     if (!ctx) return;
-    let cardLabel = "your saved card";
+    let cardLabel =
+      walletAppliedPence > 0 && !paymentIntentId
+        ? "your KickOff wallet"
+        : "your saved card";
     if (paymentIntentId) {
       try {
         const pi = await getStripe().paymentIntents.retrieve(paymentIntentId, {
@@ -83,11 +87,17 @@ export async function notifyPromotion(
         if (card?.brand && card.last4) {
           cardLabel = `${card.brand.charAt(0).toUpperCase()}${card.brand.slice(1)} ending ${card.last4}`;
         }
-        // The promoted player pays what they agreed at checkout time.
-        ctx.amountLabel = formatPence(pi.amount);
+        if (walletAppliedPence > 0) {
+          cardLabel += ` (plus ${formatPence(walletAppliedPence)} wallet credit)`;
+        }
+        // The promoted player pays what they agreed at checkout time —
+        // the card amount plus any wallet credit put down at join.
+        ctx.amountLabel = formatPence(pi.amount + walletAppliedPence);
       } catch (err) {
         console.error("[email] promotion card lookup failed:", err);
       }
+    } else if (walletAppliedPence > 0) {
+      ctx.amountLabel = formatPence(walletAppliedPence);
     }
     await sendPromotedEmail({ ...ctx, cardLabel });
   } catch (err) {
